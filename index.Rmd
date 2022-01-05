@@ -1,0 +1,820 @@
+---
+title: "Análisis demográfico con datos de la OCDE"
+subtitle: "Anna Chesa Llorens(anchello@alumni.uv.es)" 
+author: "Universitat de València"
+date: "Diciembre de 2021 (actualizado el `r format(Sys.time(), '%d-%m-%Y')`)"
+output: rmdformats::readthedown
+html_document:
+    toc: true
+    toc_depth: 3 
+    toc_float: 
+    collapsed: true
+    smooth_scroll: true
+    self_contained: true
+    number_sections: false
+    df_print: kable
+    code_download: true
+    editor_options: 
+    chunk_output_type: console
+    always_allow_html: yes
+---
+
+```{r packages-setup, include = FALSE}
+library(tidyverse)
+library(klippy)  #- remotes::install_github("rlesur/klippy")
+library(knitr)
+library(dplyr)
+library(rio)
+library(ggplot2)
+library(gt)
+library(gganimate)
+library(wordcloud2) 
+library(maps)
+library(fmsb)
+library(RColorBrewer)
+library(scales)
+library(kableExtra)
+library(ggridges)
+library(patchwork)
+library(plotly)
+library(gtable)
+```
+
+```{r chunk-setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE, 
+                      #results = "hold",
+                      cache = FALSE, cache.path = "/caches/", comment = "#>",
+                      #fig.width = 7, #fig.height= 7,   
+                      #out.width = 7, out.height = 7,
+                      collapse = TRUE,  fig.show = "hold",
+                      fig.asp = 0.628, out.width = "75%", fig.align = "center")
+knitr::opts_chunk$set(dev = "png", dev.args = list(type = "cairo-png"))
+```
+
+```{r options-setup, include = FALSE}
+options(scipen = 999) #- para quitar la notación científica
+options("yaml.eval.expr" = TRUE) 
+```
+
+```{r klippy, echo = FALSE}
+klippy::klippy(position = c("top", "right")) #- remotes::install_github("rlesur/klippy")
+```
+
+<hr class="linea-black">
+
+Trabajo elaborado para la asignatura "*Programación y manejo de datos en la era del Big Data*" de la Universitat de València durante el curso 2021-2022. El repo del trabajo está [aquí](https://github.com/annachesa/trabajo_BigData){target="_blank"}.
+
+La página web de la asignatura y los trabajos de mis compañeros pueden verse [aquí](https://perezp44.github.io/intro-ds-21-22-web/07-trabajos.html){target="_blank"}.
+
+<hr class="linea-red">
+
+# [1. Introducción]{.verdecito}
+
+En este trabajo vamos a analizar varias **variables demográficas** de países que pertenecen a la [OCDE](https://www.oecd.org/acerca/), un Organismo de Cooperación Internacional compuesto por 38 estados, cuyo objetivo es coordinar sus políticas económicas y sociales. Queremos ver **cómo han evolucionado** las variables durante los últimos **20 años** (*2000-2020*) y hacer **comparaciones** entre los distintos países, la media de la UE-27, la propia OCDE, el mundo en general y el G20. Las variables que vamos a analizar son la **proporción** de **población envejecida, trabajadora, joven** y la **población total**.
+
+# 2. Datos
+
+Los datos utilizados en todo el trabajo proceden de la **página web oficial de la OCDE**, en su sección de [datos](https://data.oecd.org/). Se han seleccionado cuatro datasets distintos dentro del apartado de [**sociedad y demografía**](https://data.oecd.org/society.htm). Para analizar con exactitud estos datos,
+
+Primero, cargamos los datos para poder trabajar con ellos:
+
+```{r}
+elderly_pop <- import("./datos/elderly_pop.csv")
+pop <- import("./datos/pop.csv")
+working_pop <- import("./datos/working_pop.csv")
+young_pop <- import("./datos/young_pop.csv")
+```
+
+## 2.1. Procesando los datos
+
+En primer lugar, dado que la cantidad de datos era muy elevada y se recogían para muchos años, hemos decidido centrar nuestra investigación en **dos años**, para ver así la evolución. Es por eso por lo que hemos filtrado cada variable para los años **2000** y **2020**.
+
+```{r}
+elderly_pop <- elderly_pop %>%
+  select(LOCATION, TIME, Value) %>%
+  filter(TIME == 2000 | TIME == 2020)
+
+pop <- pop %>%
+  select(LOCATION, TIME, Value, MEASURE) %>%
+  filter(TIME == 2000 | TIME == 2020) %>%
+  filter(MEASURE == "AGRWTH") %>%
+  select(LOCATION, TIME, Value)
+
+working_pop <- working_pop %>%
+  select(LOCATION, TIME, Value) %>%
+  filter(TIME == 2000 | TIME == 2020) 
+
+young_pop <- young_pop %>%
+  select(LOCATION, TIME, Value) %>%
+  filter(TIME == 2000 | TIME == 2020)
+```
+
+Además, nuestra intención era tener todos los datos necesarios en una misma tabla, para así poder realizar el análisis de una manera más rápida y sencilla. Para eso, hemos **unido** los data frames hasta conseguir uno **conjunto**.
+
+```{r}
+aa <- left_join(elderly_pop, pop, by = c("LOCATION", "TIME"))
+
+bb <- left_join(aa, working_pop, by = c("LOCATION", "TIME"))
+
+cc <- left_join(bb, young_pop, by = c("LOCATION", "TIME"))
+
+data <- cc %>% rename(elderly = Value.x, population = Value.y, working = Value.x.x, young = Value.y.y)
+
+data <- data %>% rename(country = LOCATION, year = TIME)
+
+rm(aa)
+rm(bb)
+rm(cc)
+```
+
+También es importante tener en cuenta **qué tipo de datos** son los que estamos manejando, y conocer la **existencia** de ***NA's*** para los cálculos posteriores. Por eso, los analizamos mediante los gráficos siguientes:
+
+```{r}
+visdat::vis_dat(data) 
+```
+
+La buena noticia que se aprecia a primera vista es que **no hay NA's** en nuestro dataset. Además, con este gráfico podemos ver **cómo se distribuyen** las variables de tipo **caracteres**, **numéricos** y **enteros**.
+
+# 3. Preguntas de investigación
+
+## 3.1 Diferencias de porcentajes entre los años 2000-2020.
+
+En primer lugar, nos gustaría hacer un **ránking** de los países observando las diferentes variables que hemos recogido en el dataset.
+
+-   Empezamos por la variable de la **población joven**, donde se incluyen las personas con **menos de quince años**. Aquí hemos querido ananalizar cómo ha sido la evolución de los países de esta variable en cambios porcentuales, entre los años 2000 y 2020. Así, mostramos una tabla con los países que han sufrido una **mayor caída** de este porcentaje, ordenados de mayor a menor caída.
+
+```{r echo=FALSE}
+young_evolution <- data %>%
+  group_by(country) %>% 
+  select(country, year, young) %>% 
+  mutate(young_evolution = young - lag(young)) %>%
+  filter(year == 2020) %>%
+  select(young_evolution)%>%
+  arrange(young_evolution)
+
+DT::datatable(young_evolution)
+```
+
+Como resultado podemos apreciar cómo **Arabia Saudita** es el país en el que ha habido un mayor descenso de la población menor de 15 años, seguido por países como **Costa Rica, Brasil,** o **Corea** **del Sur**. Por su contra, los países que menos han visto disminuir su población joven han sido **España** (sorprendentemente), **Rusia, República Checa o Grecia**, entre otros.
+
+En general, los países han visto **disminuir** la proporción de gente joven en relación con la población total en prácticamente todos los casos. Esto lo podemos observar de manera más clara si nos fijamos en el gráfico inferior.
+
+```{r echo=FALSE}
+ggplot(data, aes(young, country, size = young, colour = country)) +
+  geom_point(alpha = 0.7, show.legend = FALSE) +
+  scale_size(range = c(2, 12)) +
+  scale_x_log10() +
+  labs(title = 'Year: {frame_time}', x = 'Young population proportion', y = 'Country') +
+  transition_time(year) +
+  ease_aes('linear')
+```
+
+-   *¿Cuáles son los países con mayor caída de **población envejecida**?* En este caso queremos analizar la variable opuesta a la anteriormente citada, y realizamos el mismo procedimiento de investigación, una tabla que nos muestre el cambio porcentual en esta variable en los diferentes países. En esta tabla, a diferencia de en la anterior, ordenamos los resultados de **mayor variación a menor**, pero **positiva**.
+
+```{r echo=FALSE}
+elderly_evolution <- data %>%
+  group_by(country) %>% 
+  select(country, year, elderly) %>% 
+  mutate(elderly_evolution = elderly - lag(elderly)) %>%
+  filter(year == 2020) %>%
+  select(elderly_evolution)%>%
+  arrange(desc(elderly_evolution))
+
+DT::datatable(elderly_evolution)
+```
+
+En esta ocasión vemos cómo el país donde se ha incrementado más la proporción de personas mayores de 65 años es **Japón**, cosa que no nos sorprende dada la longevidad de sus habitantes. A Japón le siguen también **Corea del Sur, Singaput, Finlandia y Malta**. Pero, si miramos la otra cara de la moneda, observamos cómo en esta ocasión los países con menos crecimiento de la proporción de gente mayor de 65 años son **Arabia Saudita, Luxemburgo, Sudáfrica, Indonesia y Argentina**.
+
+De nuevo, mediante un gráfico animado podemos observar la tendencia de esta variable a través de los años, y veremos cómo, al contrario que con la población joven, **esta proporción ha aumentado de manera general** en todos los países recogidos en nuestros datos. Este fenómeno es debido, entre otras cosas, a los avances en la medicina que provocan un alargamiento de la esperanza de vida.
+
+```{r echo=FALSE}
+ggplot(data, aes(elderly, country, size = elderly, colour = country)) +
+  geom_point(alpha = 0.7, show.legend = FALSE) +
+  scale_size(range = c(2, 12)) +
+  scale_x_log10() +
+  labs(title = 'Year: {frame_time}', x = 'Elderly population proportion', y = 'Country') +
+  transition_time(year) +
+  ease_aes('linear')
+```
+
+-   Por último, nos gustaría hacer las mismas observaciones teniendo ahora en cuenta la evolución en los países de la proporción de la **población en edad de trabajo** sobre la población total, que contempla a todos aquellos entre los 15 y 65 años.
+
+```{r echo=FALSE}
+working_evolution <- data %>%
+  group_by(country) %>% 
+  select(country, year, working) %>% 
+  mutate(working_evolution = working - lag(working)) %>%
+  filter(year == 2020) %>%
+  select(working_evolution)%>%
+  arrange(desc(working_evolution))
+
+DT::datatable(working_evolution)
+```
+
+Los resultado muestran cómo **Arabia Saudita** es el país con un mayor incremento del porcentaje de población en edad de trabajar durante el período de tiempo analizado. También le siguen, aunque a bastante distancia, **Costa Rica, Indonesia, México y Brasil**. Por la otra parte, los países que han experimentado una mayor caída de este porcentaje o, lo que es lo mismo, un descenso de la proporción de población en edad de trabajar son **Japón, República Checa, Eslovenia, Finlandia y Grecia**.
+
+Para finalizar, si observamos la tendencia de la variable a lo largo del tiempo, vemos cómo en este caso **no** podemos extraer una **conclusión firme**, ya que va a depender del país que observemos. En general se puede apreciar un mayor número de países que han reducido esta proporción, pero no se extraen conclusiones de una forma tan clara como en los dos casos anteriores.
+
+```{r echo=FALSE}
+ggplot(data, aes(working, country, size = working, colour = country)) +
+  geom_point(alpha = 0.7, show.legend = FALSE) +
+  scale_size(range = c(2, 12)) +
+  scale_x_log10() +
+  labs(title = 'Year: {frame_time}', x = 'Working population proportion', y = 'Country') +
+  transition_time(year) +
+  ease_aes('linear')
+```
+
+## 3.2 Análisis de las variables por países
+
+Procedemos ahora a analizar cada una de las variables en los distintos países, para ver así cuáles eran ya en el año 2000 los **diez países con mayor porcentaje** de cada una de las tres variables que analizamos, y **cómo ha cambiado** eso en los veinte años de análisis. Para eso, vamos a visualizar dos gráficos por variable, uno que nos dirá cuáles eran los diez países con mayor porcentaje de la población respecto a una variable en el año 2000 y el otro en el año 2020, para ver así el cambio.
+
+-   En primer lugar, volvemos a empezar analizando la variable que tiene en cuenta el porcentaje de habitantes **menores de 15 años** en el país en proporción a el total de habitantes. En este caso, en el año 2000 el país con más proporción de su población en este rango de edad era **Sudáfrica**, seguido por la media mundial, **Turquía**, **Arabia Saudita** y **México**. Todos estos mismos países (y la media mundial) han mantenido su posición en este ámbito durante los 20 años siguientes, aunque a partir de la sexta posición, el ránking ha cambiado, y países como **Israel**, que antes no aparecían entre los 10 seleccionados, ha pasado a la sexta posición en 2020, viendo así su proporción de población joven incrementar de manera evidente en comparación con otras economías.
+
+```{r echo=FALSE}
+young_proportion2000 <- data %>%
+  select(country, year, young) %>% 
+  filter(year == 2000) %>%
+  slice_max(young, n = 10)
+p1 <- ggplot(young_proportion2000, aes(country, young, color = country)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip() + 
+  labs(title = "Población joven, año 2000",
+       caption = "OCDE",
+       x = "Proporción población joven",
+       y = "País")
+ggplotly(p1)
+
+young_proportion2020 <- data %>%
+  select(country, year, young) %>% 
+  filter(year == 2020) %>%
+  slice_max(young, n = 10)
+p2 <- ggplot(young_proportion2020, aes(country, young, color = country)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip() + 
+  labs(title = "Población joven, año 2020",
+       caption = "OCDE",
+       x = "Proporción población joven",
+       y = "País")
+ggplotly(p2)
+```
+
+-   Ahora analizamos la proporción de habitantes **mayores de 65 años** en relación con la población total. En esta ocasión sí vemos grandes cambios en ambos gráficos, pasando de tener entre los cinco países con la proporción de habitantes envejecidos más alta a **Suecia, Portugal, Japón, Italia y Grecia**, a la apaición de países como **Letonia o Coracia**. En el caso de **España**, ha pasado de aparecer en el top 10 a no hacerlo en el año 2020.
+
+```{r echo=FALSE}
+elderly_proportion2000 <- data %>%
+  select(country, year, elderly) %>% 
+  filter(year == 2000) %>%
+  slice_max(elderly, n = 10)
+p3 <- ggplot(elderly_proportion2000, aes(country, elderly, color = country)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip() + 
+  labs(title = "Población 65+, año 2000",
+       caption = "OCDE",
+       x = "Proporción población 65+",
+       y = "País")
+ggplotly(p3)
+
+elderly_proportion2020 <- data %>%
+  select(country, year, elderly) %>% 
+  filter(year == 2020) %>%
+  slice_max(elderly, n = 10)
+p4 <- ggplot(elderly_proportion2020, aes(country, elderly, color = country)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip() + 
+  labs(title = "Población 65+, año 2020",
+       caption = "OCDE",
+       x = "Proporción población 65+",
+       y = "País")
+ggplotly(p4)
+```
+
+-   Por último, nos centramos en la proporción de **personas en edad de trabajar** y analizamos los diez países con el valor más alto durante ambos años en los que se centra el estudio. En primer lugar, cane destacar el gran cambio en la clasificación con el paso del tiempo. En el año 2000 los prieros países del ránking fueron **Eslovenia, Eslovaquia, Singapur, Rusia y Rumania**, mientras que veinte años después, de estos países sólo se mantiene en el ránking Singapur y aparecen otros como **Turquía, Arabaia Suadita, Luxemburgo y Corea del Sur**. En el caso de **España**, de nuevo aparece sólo en la clasificación en el año 2000.
+
+```{r echo=FALSE}
+working_proportion2000 <- data %>%
+  select(country, year, working) %>% 
+  filter(year == 2000) %>%
+  slice_max(working, n = 10)
+p5 <- ggplot(working_proportion2000, aes(country, working, color = country)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip() + 
+  labs(title = "Población edad de trabajar, 2000",
+       caption = "OCDE",
+       x = "Proporción población WAP",
+       y = "País")
+ggplotly(p5)
+
+working_proportion2020 <- data %>%
+  select(country, year, working) %>% 
+  filter(year == 2020) %>%
+  slice_max(working, n = 10)
+p6 <- ggplot(working_proportion2020, aes(country, working, color = country)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip() + 
+  labs(title = "Población edad de trabajar, 2020",
+       caption = "OCDE",
+       x = "Proporción población WAP",
+       y = "País")
+ggplotly(p6)
+```
+
+## 3.3 Análisis de países concretos.
+
+Una vez acabado el análisis general de las variables, procedemos a estudiar algunos casos en concreto. Entre los países elegidos para este análisis están España, Alemania, Estados Unidos y Arabia Saudita.
+
+### *España*
+
+España es el país donde vivimos, y por eso ha sido escogido para analizarlo un poco más en profundidad y poder ver cómo se situa comparado con la media de la Unión Europea, el G20 y el mundo en general. Para eso, vamos a visualizar todas estas variables en dos tablas, distinguiendo entre los años analizados para ver la evolución, una para el año 2000 y otra para 2020.
+
+```{r echo=FALSE}
+españa1 <- data %>%
+  filter(country == "ESP" | country == "WLD" | country == "G20" | country == "EU27") %>%
+  filter(year == 2000) %>%
+  select(country, elderly, working, young)
+
+DT::datatable(españa1)
+
+españa2 <- data %>%
+  filter(country == "ESP" | country == "WLD" | country == "G20" | country == "EU27") %>%
+  filter(year == 2020) %>%
+  select(country, elderly, working, young)
+
+DT::datatable(españa2)
+```
+
+Como apreciamos, en el año **2000** la proporción de **gente de edad avanzada** en España era un poco más alta a la de la media de la Unión Europea, aunque mucho mayor en comparación con el mundo y el G20. Por lo que respecta a la proporción de **gente joven**, se encontraba por debajo de la media de la Unión Europea en dos puntos, aunque, de nuevo, muy por debajo de la media mundial y del G20, a unos 15 puntos porcentuales aproximadamente. Por último, teniendo en cuenta la proporción de **personas en edad de trabajar**, observamos como España tiene el mayor porcentaje en comparación con las medias de la UE, G20 y el mundo, aunque no con diferencias como las observadas anteriormente.
+
+En cambio, si pasamos ahora a observar los datos de **2020**, vemos cómo ha aumentado el **porcentaje de gente de mayor edad**, aunque no tanto como el de la media de la Unión Europea; además, también ha aumentado este valor en el mundo y G20, situándose aún muy por debajo de España y la UE. En definitiva, podemos decir que tanto España como la UE son economías con una gran proporción de gente de edad avanzada. En cuanto al **porcentaje de gente joven**, no vemos ahora un crecimiento de la proporción, sino un ligero descenso (más ligero que en la media de la UE). La proporción de gente joven ha bajado de manera muy acusada en el mundo y en el G20, por eso podemos decir que el ligero descenso de esta variable podrían ser buenas noticias para España en comparación, aunque deberíamos esperar un crecimiento para compensar el sí observado respecto a los mayores. Por último, el dato más preocupante se observa con la variable de **personas en edad de trabajar**. Hemos visto cómo en España este porcentaje ha disminuido en torno a 3 puntos porcentuales, y aunque es un descenso parecido al de la media de la UE, va en dirección contraria a la tendencia que vemos tanto en el mundo como en el G20, donde se aprecia un incremento de esta variable.
+
+En definitiva, podemos afirmar que en españa hay, después de 20 años, un mayor porcentaje de gente mayor de 65 años y un menor porcentaje de gente joven y en edad de trabajar, lo que podría tener consecuencias malas en temas como la sostenibilidad de nuestro sistema de pensiones.
+
+Todo esto se puede observar también en la colección de gráficos separados por años que observamos aquí:
+
+```{r echo=FALSE}
+p1 <- ggplot(españa1, aes(country, elderly)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip()
+p2 <- ggplot(españa1, aes(country, young)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip()
+p3 <- ggplot(españa1, aes(country, working)) + geom_bar(stat = "identity")+ theme_minimal()+ coord_flip()
+
+p1 + p2 + p3
+
+p3 <- ggplot(españa2, aes(country, elderly)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip()
+p4 <- ggplot(españa2, aes(country, young)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip()
+p5 <- ggplot(españa2, aes(country, working)) + geom_bar(stat = "identity")+ theme_minimal()+ coord_flip()
+
+p3 + p4 + p5
+```
+
+Además, mediante los siguientes gráficos dinámicos observamos también la evolución en las diferentes variables.
+
+```{r echo=FALSE}
+españa <- data %>%
+  filter(country == "ESP" | country == "WLD" | country == "G20" | country == "EU27")
+  
+animacion <- ggplot(data = españa) +
+  geom_col(aes(country, elderly, fill = country)) +
+  scale_y_discrete(breaks = seq(0, 100, 10), label = scales::dollar) +
+  geom_text(aes(country, elderly, label = elderly), hjust=-0.5) +
+  geom_text(aes(country, y=0, label = country), hjust=1.1) + 
+  geom_text(aes(x=15, y=max(elderly) , label = as.factor(year)), vjust = 5, alpha = 0.5,  col = "gray", size = 10) +
+  coord_flip(clip = "off", expand = FALSE) + 
+  theme_minimal() + theme(
+    panel.grid = element_blank(), 
+    legend.position = "none",
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    plot.margin = margin(1, 4, 1, 9, "cm")
+  ) +
+  transition_states(year, state_length = 0, transition_length = 2) +
+  ease_aes ('linear') +
+  labs(title = "Evolución de la población 65+ en España")
+
+animate(animacion, width = 700, height = 432, fps = 25, duration = 15, rewind = FALSE)
+```
+
+```{r echo=FALSE}
+animacion2 <- ggplot(data = españa) +
+  geom_col(aes(country, young, fill = country)) +
+  scale_y_discrete(breaks = seq(0, 100, 10), label = scales::dollar) +
+  geom_text(aes(country, young, label = young), hjust=-0.5) +
+  geom_text(aes(country, y=0, label = country), hjust=1.1) + 
+  geom_text(aes(x=15, y=max(young) , label = as.factor(year)), vjust = 5, alpha = 0.5,  col = "gray", size = 10) +
+  coord_flip(clip = "off", expand = FALSE) + 
+  theme_minimal() + theme(
+    panel.grid = element_blank(), 
+    legend.position = "none",
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    plot.margin = margin(1, 4, 1, 9, "cm")
+  ) +
+  transition_states(year, state_length = 0, transition_length = 2) +
+  ease_aes ('linear') +
+  labs(title = "Evolución de la población joven en España")
+
+animate(animacion2, width = 700, height = 432, fps = 25, duration = 15, rewind = FALSE)
+```
+
+```{r echo=FALSE}
+animacion3 <- ggplot(data = españa) +
+  geom_col(aes(country, working, fill = country)) +
+  scale_y_discrete(breaks = seq(0, 100, 10), label = scales::dollar) +
+  geom_text(aes(country, working, label = working), hjust=-0.5) +
+  geom_text(aes(country, y=0, label = country), hjust=1.1) + 
+  geom_text(aes(x=15, y=max(working) , label = as.factor(year)), vjust = 5, alpha = 0.5,  col = "gray", size = 10) +
+  coord_flip(clip = "off", expand = FALSE) + 
+  theme_minimal() + theme(
+    panel.grid = element_blank(), 
+    legend.position = "none",
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    plot.margin = margin(1, 4, 1, 9, "cm")
+  ) +
+  transition_states(year, state_length = 0, transition_length = 2) +
+  ease_aes ('linear') +
+  labs(title = "Evolución de la población en edad de trabajar en España")
+
+animate(animacion3, width = 700, height = 432, fps = 25, duration = 15, rewind = FALSE)
+```
+
+### *Alemania*
+
+Este país ha servido en incontables ocasiones como ejemplo a seguir dentro de la Unión Europea. Es por eso por lo que lo hemos escogido para analizar más a fondo su evolución a lo largo de los veinte años analizados, con tablas diferenciadas por años.
+
+```{r echo=FALSE}
+alemania1 <- data %>%
+  filter(country == "DEU" | country == "WLD" | country == "G20" | country == "EU27") %>%
+  filter(year == 2000) %>%
+  select(country, elderly, working, young)
+
+DT::datatable(alemania1)
+
+alemania2 <- data %>%
+  filter(country == "DEU" | country == "WLD" | country == "G20" | country == "EU27") %>%
+  filter(year == 2020) %>%
+  select(country, elderly, working, young)
+
+DT::datatable(alemania2)
+```
+
+En el año **2000**, la situación alemana respecto al porcentaje de **personas mayores de 65 años** era muy parecida a la media de la UE, aunque ligeramente superior. No obstante, en comparación con el mundo y el G20, este porcentaje era extremadamente superior, llegando casi a alcanzar los 10 puntos porcentuales de diferencia. Si observamos la variable del porcentaje de **personas en edad de trabajar**, volvemos a ver esa práctica igualdad con la media de la UE, situándose de nuevo por encima del mundo y el G20, aunque en esta ocasión con muy ligeras diferencias. Por último, el porcentaje de **personas menores de 15 años** era ligeramente inferior a la media de la UE, y se situaba muy por debajo de la proporción en el mundo y el G20, de nuevo con diferencias que ahora sobrepasan los 15 puntos porcentuales.
+
+Los datos del año **2020** nos permiten hacer una comparación de cómo han evolucionado estas variables durante los 20 años de diferencia. En el caso de Alemania, vemos que el porcentaje de **gente de avanzada edad** ha incrementado un 6%, un poco más que el de la UE; en cambio, el aumento de esta variable en el resto del mundo y en el G20 ha sido más modesto, de entorno al 3%. El porcentaje de **personas en edad de trabajar** ha disminuido en el mismo valor que la UE, a diferencia del mundo y el G20, quienes han aumentado este indicador en hasta un 3%. Por último, la proporción de **personas jóvenes** ha disminuido en Alemania más que en la UE, pero bastante menos que en el mundo y el G20.
+
+En resumen, nos encontramos de nuevo frente a un país que ha experimentado un crecimiento en la población de edad avanzada, así como un descenso del porcentaje de personas en edad de trabajar y jóvenes. Aunque no tan acusados como en España, estos cambios demográficos podrían traer problemas al país si no son resueltos en el corto o medio plazo.
+
+De nuevo, esta información se puede apreciar de manera más visual en los gráficos que se muestran a continuación.
+
+```{r echo=FALSE}
+p1 <- ggplot(alemania1, aes(country, elderly)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip()
+p2 <- ggplot(alemania1, aes(country, young)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip()
+p3 <- ggplot(alemania1, aes(country, working)) + geom_bar(stat = "identity")+ theme_minimal()+ coord_flip()
+
+p1 + p2 + p3
+
+p4 <- ggplot(alemania2, aes(country, elderly)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip()
+p5 <- ggplot(alemania2, aes(country, young)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip()
+p6 <- ggplot(alemania2, aes(country, working)) + geom_bar(stat = "identity")+ theme_minimal()+ coord_flip()
+
+p4 + p5 + p6
+```
+
+De nuevo, observamos esta variación de forma dinámica en los gráficos siguientes.
+
+```{r echo=FALSE}
+alemania <- data %>%
+  filter(country == "DEU" | country == "WLD" | country == "G20" | country == "EU27")
+  
+animacion <- ggplot(data = alemania) +
+  geom_col(aes(country, elderly, fill = country)) +
+  scale_y_discrete(breaks = seq(0, 100, 10), label = scales::dollar) +
+  geom_text(aes(country, elderly, label = elderly), hjust=-0.5) +
+  geom_text(aes(country, y=0, label = country), hjust=1.1) + 
+  geom_text(aes(x=15, y=max(elderly) , label = as.factor(year)), vjust = 5, alpha = 0.5,  col = "gray", size = 10) +
+  coord_flip(clip = "off", expand = FALSE) + 
+  theme_minimal() + theme(
+    panel.grid = element_blank(), 
+    legend.position = "none",
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    plot.margin = margin(1, 4, 1, 9, "cm")
+  ) +
+  transition_states(year, state_length = 0, transition_length = 2) +
+  ease_aes ('linear') +
+  labs(title = "Evolución de la población 65+ en Alemania")
+
+animate(animacion, width = 700, height = 432, fps = 25, duration = 15, rewind = FALSE)
+```
+
+```{r echo=FALSE}
+animacion2 <- ggplot(data = alemania) +
+  geom_col(aes(country, young, fill = country)) +
+  scale_y_discrete(breaks = seq(0, 100, 10), label = scales::dollar) +
+  geom_text(aes(country, young, label = young), hjust=-0.5) +
+  geom_text(aes(country, y=0, label = country), hjust=1.1) + 
+  geom_text(aes(x=15, y=max(young) , label = as.factor(year)), vjust = 5, alpha = 0.5,  col = "gray", size = 10) +
+  coord_flip(clip = "off", expand = FALSE) + 
+  theme_minimal() + theme(
+    panel.grid = element_blank(), 
+    legend.position = "none",
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    plot.margin = margin(1, 4, 1, 9, "cm")
+  ) +
+  transition_states(year, state_length = 0, transition_length = 2) +
+  ease_aes ('linear') +
+  labs(title = "Evolución de la población joven en Alemania")
+
+animate(animacion2, width = 700, height = 432, fps = 25, duration = 15, rewind = FALSE)
+```
+
+```{r echo=FALSE}
+animacion3 <- ggplot(data = alemania) +
+  geom_col(aes(country, working, fill = country)) +
+  scale_y_discrete(breaks = seq(0, 100, 10), label = scales::dollar) +
+  geom_text(aes(country, working, label = working), hjust=-0.5) +
+  geom_text(aes(country, y=0, label = country), hjust=1.1) + 
+  geom_text(aes(x=15, y=max(working) , label = as.factor(year)), vjust = 5, alpha = 0.5,  col = "gray", size = 10) +
+  coord_flip(clip = "off", expand = FALSE) + 
+  theme_minimal() + theme(
+    panel.grid = element_blank(), 
+    legend.position = "none",
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    plot.margin = margin(1, 4, 1, 9, "cm")
+  ) +
+  transition_states(year, state_length = 0, transition_length = 2) +
+  ease_aes ('linear') +
+  labs(title = "Evolución de la población en edad de trabajar en Alemania")
+
+animate(animacion3, width = 700, height = 432, fps = 25, duration = 15, rewind = FALSE)
+```
+
+### *Estados Unidos*
+
+Entendido como el país más potente y rico del mundo, no podía faltar en nuestro análisis específico de las variables demográficas analizadas en este trabajo.
+
+```{r echo=FALSE}
+eeuu1 <- data %>%
+  filter(country == "USA" | country == "WLD" | country == "G20" | country == "EU27") %>%
+  filter(year == 2000) %>%
+  select(country, elderly, working, young)
+
+DT::datatable(eeuu1)
+
+eeuu2 <- data %>%
+  filter(country == "USA" | country == "WLD" | country == "G20" | country == "EU27") %>%
+  filter(year == 2020) %>%
+  select(country, elderly, working, young)
+
+DT::datatable(eeuu2)
+```
+
+En el caso de EEUU en el año **2000**, observamos cómo la proporción de **gente mayor** se situa por debajo de la media de la UE, pero por encima de los indicadores del resto del mundo y el G20, aunque mucho más cerca del primer valor que de los otros dos. En cuanto al porcentaje de **personas en edad de trabajar**, se aprecia de nuevo cómo EEUU se encuentra entre la media de la UE y los otros dos indicadores, pero ahora todos ellos se mantienen muy cerca en cuanto al valor. En cambio, la proporción de **gente joven** en EEUU es mayor que la de la UE, y menor en gran medida en comparación con la del mundo y el G20.
+
+Fijándonos ahora en los datos del **2020** para observar la evolución, vemos cómo el porcentaje de **gente mayor** ha incrementado un 5% en EEUU, valor muy parecido al incremento observado en la UE, aunque menor al que apreciamos respecto al mundo y al G20. Por otro lado, la proporción de **gente en edad de trabajar** ha disminuido muy ligeramente, mientras que en la UE ese descenso ha sido muy superior, y en el mundo y G20 la variación ha sido positiva. Por último, el porcentaje de **gente joven** tambiñen se ha visto reducido de manera más profunda que en la UE, aunque no tanto si lo comparamos con las caídas del mundo y el G20, que rondan el 5-6%.
+
+En general observamos la misma tendencia que en España y Alemania, aunque los valores absolutos son diferentes. Es curioso ver cómo estos países tienen una tendencia en común, por eso nos interesa observar otro país totalmente diferente en cuanto a modelo de comercio y costumbres.
+
+En los gráficos mostrados a continuación se puede apreciar la tendencia mencionada de una manera más visual.
+
+```{r echo=FALSE}
+p1 <- ggplot(eeuu1, aes(country, elderly)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip()
+p2 <- ggplot(eeuu1, aes(country, young)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip()
+p3 <- ggplot(eeuu1, aes(country, working)) + geom_bar(stat = "identity")+ theme_minimal()+ coord_flip()
+
+p1 + p2 + p3
+
+p4 <- ggplot(eeuu2, aes(country, elderly)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip()
+p5 <- ggplot(eeuu2, aes(country, young)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip()
+p6 <- ggplot(eeuu2, aes(country, working)) + geom_bar(stat = "identity")+ theme_minimal()+ coord_flip()
+
+p4 + p5 + p6
+```
+
+Vamos a ver esta evolución de manera animada mediante los gráficos siguientes.
+
+```{r echo=FALSE}
+eeuu <- data %>%
+  filter(country == "USA" | country == "WLD" | country == "G20" | country == "EU27")
+  
+animacion <- ggplot(data = eeuu) +
+  geom_col(aes(country, elderly, fill = country)) +
+  scale_y_discrete(breaks = seq(0, 100, 10), label = scales::dollar) +
+  geom_text(aes(country, elderly, label = elderly), hjust=-0.5) +
+  geom_text(aes(country, y=0, label = country), hjust=1.1) + 
+  geom_text(aes(x=15, y=max(elderly) , label = as.factor(year)), vjust = 5, alpha = 0.5,  col = "gray", size = 10) +
+  coord_flip(clip = "off", expand = FALSE) + 
+  theme_minimal() + theme(
+    panel.grid = element_blank(), 
+    legend.position = "none",
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    plot.margin = margin(1, 4, 1, 9, "cm")
+  ) +
+  transition_states(year, state_length = 0, transition_length = 2) +
+  ease_aes ('linear') +
+  labs(title = "Evolución de la población 65+ en EEUU")
+
+animate(animacion, width = 700, height = 432, fps = 25, duration = 15, rewind = FALSE)
+```
+
+```{r echo=FALSE}
+animacion2 <- ggplot(data = eeuu) +
+  geom_col(aes(country, young, fill = country)) +
+  scale_y_discrete(breaks = seq(0, 100, 10), label = scales::dollar) +
+  geom_text(aes(country, young, label = young), hjust=-0.5) +
+  geom_text(aes(country, y=0, label = country), hjust=1.1) + 
+  geom_text(aes(x=15, y=max(young) , label = as.factor(year)), vjust = 5, alpha = 0.5,  col = "gray", size = 10) +
+  coord_flip(clip = "off", expand = FALSE) + 
+  theme_minimal() + theme(
+    panel.grid = element_blank(), 
+    legend.position = "none",
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    plot.margin = margin(1, 4, 1, 9, "cm")
+  ) +
+  transition_states(year, state_length = 0, transition_length = 2) +
+  ease_aes ('linear') +
+  labs(title = "Evolución de la población joven en EEUU")
+
+animate(animacion2, width = 700, height = 432, fps = 25, duration = 15, rewind = FALSE)
+```
+
+```{r echo=FALSE}
+animacion3 <- ggplot(data = eeuu) +
+  geom_col(aes(country, working, fill = country)) +
+  scale_y_discrete(breaks = seq(0, 100, 10), label = scales::dollar) +
+  geom_text(aes(country, working, label = working), hjust=-0.5) +
+  geom_text(aes(country, y=0, label = country), hjust=1.1) + 
+  geom_text(aes(x=15, y=max(working) , label = as.factor(year)), vjust = 5, alpha = 0.5,  col = "gray", size = 10) +
+  coord_flip(clip = "off", expand = FALSE) + 
+  theme_minimal() + theme(
+    panel.grid = element_blank(), 
+    legend.position = "none",
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    plot.margin = margin(1, 4, 1, 9, "cm")
+  ) +
+  transition_states(year, state_length = 0, transition_length = 2) +
+  ease_aes ('linear') +
+  labs(title = "Evolución de la población en edad de trabajar en EEUU")
+
+animate(animacion3, width = 700, height = 432, fps = 25, duration = 15, rewind = FALSE)
+```
+
+### *Arabia Saudita*
+
+Por último, procedemos al análisis de Arabia Saudita, ya que hemos visto cómo su nombre se repetía en numerosas ocasiones al principio de nuestro trabajo, y además es un país radicalmente diferente a los analizados anteriormente. De nuevo, observamos las variables para los años 2000 y 2020 en dos tablas separadas.
+
+```{r echo=FALSE}
+arabiasaudita1 <- data %>%
+  filter(country == "SAU" | country == "WLD" | country == "G20" | country == "EU27") %>%
+  filter(year == 2000) %>%
+  select(country, elderly, working, young)
+
+DT::datatable(arabiasaudita1)
+
+arabiasaudita2 <- data %>%
+  filter(country == "SAU" | country == "WLD" | country == "G20" | country == "EU27") %>%
+  filter(year == 2020) %>%
+  select(country, elderly, working, young)
+
+DT::datatable(arabiasaudita2)
+```
+
+En el año **2000**, Arabia Saudita tenía un porcentaje de **gente de edad avanzada** mucho más pequeño en comparación con la UE, el mundo y el G20, llegando a haber diferencias de hasta el 12%. De nuevo, el porcentaje de **personas en edad de trabajar** se situava por debajo de todos los otros, aunque en este caso las diferencias son mucho menores (excepto con la UE). Por último, el porcentaje de **gente menor de 15 años** era el más elevado en comparación con la UE, el mundo y el G20, siendo más del doble de la UE y muy superior a los otros.
+
+Para poder hacer un seguimiento de cómo han evolucionado estas variables, analizamos los datos del **2020**, y vemos así cómo la proporción de **gente mayor de 65 años** ha incrementado en la UE, el mundo y el G20, pero no lo ha hecho apenas en Arabia Saudita (un 0.2%). Respecto al porcentaje de las **personas en edad de trabajar**, en Arabia Saudita ha incrementado de manera muy sustancial, mientras que en la UE se ha visto reducido y en el mundo y el G20 ha aumentado ligeramente. La única variable que ha empeorado es la proporción de **gente menor de 15 años**, que se ha visto reducida en más de 10 puntos porcentuales, cuando en la UE ha disminuido también pero muy ligeramente; en el mundo y G20 la disminución ha sido mayor pero no tanto como en el país analizado.
+
+En resumen, los indicadores de Arabia Saudita son muy diferentes a los observados en los otros países analizados. Mientras que su porcentaje de población mayor no ha crecido mucho, sí ha aumentado enormemente el porcentaje de gente en edad de trabajar, aunque vemos también una reducción importante del porcentaje de gente joven. Toda esta información se aprecia en los gráficos que se muestran a continuación.
+
+```{r echo=FALSE}
+p1 <- ggplot(arabiasaudita1, aes(country, elderly)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip()
+p2 <- ggplot(arabiasaudita1, aes(country, young)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip()
+p3 <- ggplot(arabiasaudita1, aes(country, working)) + geom_bar(stat = "identity")+ theme_minimal()+ coord_flip()
+
+p1 + p2 + p3
+
+p4 <- ggplot(arabiasaudita2, aes(country, elderly)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip()
+p5 <- ggplot(arabiasaudita2, aes(country, young)) + geom_bar(stat = "identity") + theme_minimal()+ coord_flip()
+p6 <- ggplot(arabiasaudita2, aes(country, working)) + geom_bar(stat = "identity")+ theme_minimal()+ coord_flip()
+
+p4 + p5 + p6
+```
+
+Por último, volvemos a observar las variaciones ya comentadas mediante los gráficos dinámicos que se muestran aquí.
+
+```{r echo=FALSE}
+arabia <- data %>%
+  filter(country == "SAU" | country == "WLD" | country == "G20" | country == "EU27")
+  
+animacion <- ggplot(data = arabia) +
+  geom_col(aes(country, elderly, fill = country)) +
+  scale_y_discrete(breaks = seq(0, 100, 10), label = scales::dollar) +
+  geom_text(aes(country, elderly, label = elderly), hjust=-0.5) +
+  geom_text(aes(country, y=0, label = country), hjust=1.1) + 
+  geom_text(aes(x=15, y=max(elderly) , label = as.factor(year)), vjust = 5, alpha = 0.5,  col = "gray", size = 10) +
+  coord_flip(clip = "off", expand = FALSE) + 
+  theme_minimal() + theme(
+    panel.grid = element_blank(), 
+    legend.position = "none",
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    plot.margin = margin(1, 4, 1, 9, "cm")
+  ) +
+  transition_states(year, state_length = 0, transition_length = 2) +
+  ease_aes ('linear') +
+  labs(title = "Evolución de la población 65+ en Arabia Saudita")
+
+animate(animacion, width = 700, height = 432, fps = 25, duration = 15, rewind = FALSE)
+```
+
+```{r echo=FALSE}
+animacion2 <- ggplot(data = arabia) +
+  geom_col(aes(country, young, fill = country)) +
+  scale_y_discrete(breaks = seq(0, 100, 10), label = scales::dollar) +
+  geom_text(aes(country, young, label = young), hjust=-0.5) +
+  geom_text(aes(country, y=0, label = country), hjust=1.1) + 
+  geom_text(aes(x=15, y=max(young) , label = as.factor(year)), vjust = 5, alpha = 0.5,  col = "gray", size = 10) +
+  coord_flip(clip = "off", expand = FALSE) + 
+  theme_minimal() + theme(
+    panel.grid = element_blank(), 
+    legend.position = "none",
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    plot.margin = margin(1, 4, 1, 9, "cm")
+  ) +
+  transition_states(year, state_length = 0, transition_length = 2) +
+  ease_aes ('linear') +
+  labs(title = "Evolución de la población joven en Arabia Saudita")
+
+animate(animacion2, width = 700, height = 432, fps = 25, duration = 15, rewind = FALSE)
+```
+
+```{r echo=FALSE}
+animacion3 <- ggplot(data = arabia) +
+  geom_col(aes(country, working, fill = country)) +
+  scale_y_discrete(breaks = seq(0, 100, 10), label = scales::dollar) +
+  geom_text(aes(country, working, label = working), hjust=-0.5) +
+  geom_text(aes(country, y=0, label = country), hjust=1.1) + 
+  geom_text(aes(x=15, y=max(working) , label = as.factor(year)), vjust = 5, alpha = 0.5,  col = "gray", size = 10) +
+  coord_flip(clip = "off", expand = FALSE) + 
+  theme_minimal() + theme(
+    panel.grid = element_blank(), 
+    legend.position = "none",
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    plot.margin = margin(1, 4, 1, 9, "cm")
+  ) +
+  transition_states(year, state_length = 0, transition_length = 2) +
+  ease_aes ('linear') +
+  labs(title = "Evolución de la población en edad de trabajar en Arabia Saudita")
+
+animate(animacion3, width = 700, height = 432, fps = 25, duration = 15, rewind = FALSE)
+```
+
+# 4. Conclusiones
+
+Después de haber analizado detenidamente los valores de los datos estudiados en este trabajo, podemos extraer diferentes conclusiones al respecto.
+
+-   En general, la proporción de población menor de 15 años ha sufrido un descenso en los países observados por la OCDE, con mayor o menor intensidad dependiendo del país.
+
+-   Se observa un aumento generalizado en la proporción de la población mayor de 65 años, siendo este más evidente en países más desarrollados, gracias a los avances científicos y médicos que tienen como principal consecuencia el alargamiento de la esperanza de vida.
+
+-   La evolución de la proporción de población en edad de trabajar no sigue un patrón igualitario en general, ya que va a depender del país estudiado en particular.
+
+Para poder extraer conclusiones más elaboradas respecto a las variables analizadas en este trabajo, se debería hacee un análisis más exhaustivo de la evolución en diferentes países, así como teniendo en cuenta un período de tiempo más amplio, y relacionando las consecuencias extraídas con posibles causas observadas en el mismo umbral temporal.
+
+# 5. Trabajos en los que nos hemos basado
+
+Para la realización de este trabajo, nos hemos basado en diferentes fuentes de información que se citan a continuación.
+
+-   En general, los datos se han elaborado personalmente a partir de los datasets seleccionados de la [OCDE](https://data.oecd.org/society.htm). Como no han sido sacados de Kaggle ni otro repositorio de datos y trabajos, las preguntas de investigación, la selección de gráficos y el análisis de los resultados son fruto de la elaboración propia.
+
+-   El diseño del trabajo se ha obtenido del trabajo [*"Desigualdad en el mercado laboral"*](https://daalviar.github.io/trabajo_BigData/)(Daniela)
+
+-   Algunos gráficos son del trabajo en equipo ["Análisis de las mejores 100 universidades del mundo"](https://alicjaml.github.io/trabajo_BigData_equipo/) (Loranzo, Alicja y Anna).
+
+<br>
+
+<hr class="linea-red">
+
+<br>
+
+# 6. Bibliografía
+
+Como se ha mencionado en el apartado anterior, la mayoría del trabajo es de elaboración propia, aunque también se han utilizado las siguientes fuentes.
+
+-   Los tutoriales de la página web del curso de **Programación y manejo de datos en la era del Big Data**, a la que se puede acceder [aquí](https://perezp44.github.io/intro-ds-21-22-web/index.html).
+
+-   La propia página web de la [**OCDE**](http://oecd.org/) y [**OCDE data**](https://data.oecd.org/), de donde se han extraído definiciones principalmente.
+
+<br><br>
+
+<hr class="linea-red">
+
+# 7. Información de la R-sesión
+
+```{r}
+sessioninfo::session_info() %>% details::details(summary = 'Información de mi R-sesión:') 
+```
